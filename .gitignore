@@ -1,0 +1,22 @@
+# Ignore everything
+/*
+
+# Except the tasks folder
+!tasks/
+!.gitignore
+!README.md
+
+# Within tasks, ignore __pycache__ and compiled Python
+tasks/__pycache__/
+tasks/**/__pycache__/
+tasks/**/*.pyc
+tasks/**/*.pyo
+tasks/**/*.pyd
+
+# Ignore OS and editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
