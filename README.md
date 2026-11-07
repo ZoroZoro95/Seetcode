@@ -1,11 +1,14 @@
-# Python Docker runner — Task 1
+# Python Docker runner and one-test-case judge
 
 A learning project that executes one Python source file in a restricted Docker
-container, supplies standard input, and reports execution results as JSON.
+container, supplies standard input, and reports execution results as JSON. The
+one-test-case judge adds an exact comparison against expected output.
 
-This runner checks execution status. It does not compare output with an expected
-answer, so `OK` does not mean a solution is correct. That comparison belongs to
-Task 2.
+- **Task 1 — `runner.py`:** run the submitted program and report execution status.
+- **Task 2 — `judge.py`:** reuse the runner and decide whether its output matches
+  the expected answer for one test case.
+
+`OK` describes execution; `ACCEPTED` describes the judge's output comparison.
 
 ## Requirements and setup
 
@@ -27,7 +30,7 @@ working directory:
 cd tasks
 ```
 
-## Interface
+## Task 1: Runner interface
 
 ```bash
 python3 runner.py <source.py> "<stdin>"
@@ -198,3 +201,159 @@ restrictions do not establish a complete sandbox for hostile submissions.
 The four recorded demonstrations passed before the folder was renamed from
 `tasls` to `tasks`. They verify those execution paths, rather than every possible
 Docker failure or adversarial case.
+
+## Task 2: One-test-case judge
+
+The judge reads a test input file and an expected-output file, calls
+`run_python()` exactly once, and returns a verdict alongside the unchanged
+execution result. It imports the existing runner instead of duplicating Docker
+logic.
+
+### Files
+
+```text
+tasks/
+├── runner.py
+├── judge.py
+├── examples/
+│   ├── hello.py
+│   ├── input_sum.py
+│   ├── wrong_answer.py
+│   ├── runtime_error.py
+│   └── infinite_loop.py
+└── test_cases/
+    └── sum/
+        ├── input.txt
+        └── expected.txt
+```
+
+`input.txt` contains `5 7` followed by one newline (`"5 7\n"`).
+`expected.txt` contains `12` followed by one newline (`"12\n"`). Both are read
+as UTF-8 text. Do not add a second newline or trailing spaces to the expected
+answer.
+
+`wrong_answer.py` deliberately prints `13` and exits normally. This demonstrates
+that execution status `OK` can still lead to verdict `WRONG_ANSWER`.
+
+### Interface and verdict rules
+
+From inside `tasks`, run:
+
+```bash
+python3 judge.py examples/input_sum.py test_cases/sum/input.txt test_cases/sum/expected.txt
+```
+
+The three supplied arguments are the source-file path, test input-file path, and
+expected-output-file path. The CLI uses a two-second execution waiting limit.
+
+The reusable function is:
+
+```python
+def judge_one(
+    source_path: Path,
+    input_path: Path,
+    expected_output_path: Path,
+    timeout_seconds: float,
+) -> dict:
+    ...
+```
+
+| Condition | Verdict |
+| --- | --- |
+| Execution status is not `OK` | Preserve that status: `RUNTIME_ERROR`, `TIME_LIMIT_EXCEEDED`, or `INTERNAL_ERROR`. |
+| Execution status is `OK` and stdout equals expected text | `ACCEPTED` |
+| Execution status is `OK` and stdout differs from expected text | `WRONG_ANSWER` |
+
+Comparison is exact string equality. No `.strip()` or whitespace cleanup is
+applied. For example, `"12"`, `"12 \n"`, and `"12\n\n"` all differ from the
+expected `"12\n"`. If execution fails, its failure takes precedence even if it
+printed the expected answer first.
+
+### Four judging demonstrations
+
+Each command prints one JSON object containing `verdict` and `execution`.
+The following are the recorded results from real Docker verification. A
+temporary harness counted calls to `run_python()` and tracked each container's
+unique name; it did not replace Docker execution with simulated results.
+
+#### 1. Correct answer
+
+```bash
+python3 judge.py examples/input_sum.py test_cases/sum/input.txt test_cases/sum/expected.txt
+```
+
+Checks input-file forwarding and exact output matching:
+
+```json
+{"verdict": "ACCEPTED", "execution": {"status": "OK", "exit_code": 0, "stdout": "12\n", "stderr": ""}}
+```
+
+#### 2. Wrong answer after successful execution
+
+```bash
+python3 judge.py examples/wrong_answer.py test_cases/sum/input.txt test_cases/sum/expected.txt
+```
+
+Checks that a zero exit code does not automatically mean acceptance:
+
+```json
+{"verdict": "WRONG_ANSWER", "execution": {"status": "OK", "exit_code": 0, "stdout": "13\n", "stderr": ""}}
+```
+
+#### 3. Runtime error
+
+```bash
+python3 judge.py examples/runtime_error.py test_cases/sum/input.txt test_cases/sum/expected.txt
+```
+
+Checks that an execution failure is propagated instead of being classified as a
+wrong answer:
+
+```json
+{"verdict": "RUNTIME_ERROR", "execution": {"status": "RUNTIME_ERROR", "exit_code": 1, "stdout": "", "stderr": "Traceback (most recent call last):\n  File \"/code/sum_numbers.py\", line 4, in <module>\n    print(a/b)\n          ~^~\nZeroDivisionError: division by zero\n"}}
+```
+
+#### 4. Time limit exceeded
+
+```bash
+python3 judge.py examples/infinite_loop.py test_cases/sum/input.txt test_cases/sum/expected.txt
+```
+
+Checks that the judge preserves the runner's timeout verdict and reuses its
+container cleanup:
+
+```json
+{"verdict": "TIME_LIMIT_EXCEEDED", "execution": {"status": "TIME_LIMIT_EXCEEDED", "exit_code": null, "stdout": "", "stderr": ""}}
+```
+
+The recorded timeout demonstration returned in approximately 2.09 seconds,
+including cleanup. The exact-name check below then succeeded with no output:
+
+```bash
+docker ps -a --filter 'name=^/judge-dce81f6203314058af3dba68e4c02f9c$' --format '{{.Names}}'
+```
+
+That name belongs to the recorded test, not future executions. No running or
+stopped test containers remained after any of the four demonstrations, and no
+reviewer rescue cleanup was required.
+
+All four verdicts and JSON outputs passed verification. Each submission called
+`run_python()` exactly once. Additional simulated execution checks verified
+missing-newline rejection, propagation of `INTERNAL_ERROR`, and preservation of
+a runtime failure even when stdout matched the expected answer.
+
+### Why the judge is separate from the runner
+
+`run_python()` manages execution and reports stdout, stderr, and execution
+status. It does not need an expected answer. `judge_one()` reads the expected
+answer and decides whether the successful execution produced matching output.
+
+This separation keeps the runner reusable and allows comparison rules to change
+independently of Docker management. The reason is separation of responsibilities,
+not the cost of comparing strings. Expected output stays on the host; it does
+not need to be mounted into the container.
+
+This milestone supports one test case only. It inherits the runner's timeout,
+output-capture, cleanup, and Docker-exit-code limitations described above. File
+reading errors currently surface as Python exceptions rather than structured
+judge results.
